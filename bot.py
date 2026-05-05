@@ -3,6 +3,7 @@ import time
 import threading
 import re
 from datetime import datetime
+import pytz
 
 # ===== НАСТРОЙКИ =====
 BOT_TOKEN = "8721233798:AAFCqgy_TqwJ6snKMph20ea9jhwoLRo417Y"
@@ -12,8 +13,8 @@ YOUR_USER_ID = 5603035274
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # Хранилища
-timers = {}           # Активные таймеры
-pending_forward = {}  # Пересланные сообщения
+timers = {}
+pending_forward = {}
 
 # Регулярка для вариаций "кот"
 COT_VARIANTS = re.compile(
@@ -49,19 +50,23 @@ def is_owner_mentioned_in_message(message):
     return False
 
 def get_reply_message(is_night):
+    """Возвращает разные сообщения в зависимости от времени суток (МСК)"""
     if is_night:
-        return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель предположительно спит, прошу вас подождать до утра чтобы он вам смог ответить! 🌙"
+        return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель предположительно спит, прошу вас подождать до утра.\n\n🌙 Спокойной ночи!"
     else:
-        return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель находится вне сети, прошу вас подождать чтобы дождаться ответа! ☀️"
+        return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель находится вне сети, прошу вас подождать.\n\n☀️ Хорошего дня!"
 
 def forward_to_owner(chat_id, message_id, user_name, user_id, original_text, chat_title):
     """Пересылает сообщение владельцу в личку"""
     try:
+        # Экранируем спецсимволы в тексте
+        safe_text = original_text.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]')
+        
         forward_text = (
             f"📨 *Вам не ответили на сообщение!*\n\n"
-            f"👤 *От:* @{user_name} (ID: {user_id})\n"
-            f"💬 *Текст:* {original_text}\n"
-            f"📅 *Время:* {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+            f"👤 *От:* @{user_name}\n"
+            f"💬 *Текст:* {safe_text}\n"
+            f"📅 *Время:* {datetime.now(pytz.timezone('Europe/Moscow')).strftime('%d.%m.%Y %H:%M:%S')} МСК\n"
             f"🏠 *Группа:* {chat_title}"
         )
         bot.send_message(YOUR_USER_ID, forward_text, parse_mode="Markdown")
@@ -70,18 +75,32 @@ def forward_to_owner(chat_id, message_id, user_name, user_id, original_text, cha
         return True
     except Exception as e:
         print(f"❌ Ошибка пересылки: {e}")
+        # Пробуем отправить без форматирования
+        try:
+            bot.send_message(YOUR_USER_ID, f"Вам не ответили!\nОт: @{user_name}\nТекст: {original_text}\nГруппа: {chat_title}")
+            bot.forward_message(YOUR_USER_ID, chat_id, message_id)
+        except:
+            pass
         return False
 
-def auto_reply(chat_id, message_id, user_name, user_id, original_text, is_night, chat_title):
+def auto_reply(chat_id, message_id, user_name, user_id, original_text, chat_title):
     """Функция, которая срабатывает ЧЕРЕЗ ЗАДЕРЖКУ"""
-    # Определяем задержку в зависимости от времени суток
-    if is_night:
-        delay = 300  # 5 минут = 300 секунд
-    else:
-        delay = 600  # 10 минут = 600 секунд
+    # Определяем время по МСК
+    msk_tz = pytz.timezone('Europe/Moscow')
+    now_msk = datetime.now(msk_tz)
+    is_night = now_msk.hour >= 22 or now_msk.hour < 8
     
-    print(f"⏳ Таймер запущен: жду {delay} секунд перед ответом...")
-    time.sleep(delay)  # ВАЖНО: именно здесь ожидание!
+    if is_night:
+        delay = 300  # 5 минут
+        period = "ночь (5 мин)"
+    else:
+        delay = 600  # 10 минут
+        period = "день (10 мин)"
+    
+    print(f"⏳ Таймер запущен: жду {delay} секунд ({period} по МСК)...")
+    
+    # Ждем
+    time.sleep(delay)
     
     # Проверяем, не отменили ли таймер
     key = (chat_id, message_id)
@@ -89,7 +108,7 @@ def auto_reply(chat_id, message_id, user_name, user_id, original_text, is_night,
         print(f"⏸️ Таймер отменен (владелец ответил)")
         return
     
-    # Отправляем автоответ в чат
+    # Отправляем автоответ в чат (только одна фраза, без дублирования!)
     reply_text = get_reply_message(is_night)
     try:
         bot.send_message(
@@ -101,12 +120,16 @@ def auto_reply(chat_id, message_id, user_name, user_id, original_text, is_night,
         print(f"✅ Автоответ отправлен для сообщения {message_id}")
     except Exception as e:
         print(f"❌ Ошибка автоответа: {e}")
+        # Пробуем без форматирования
+        try:
+            bot.send_message(chat_id, reply_text.replace('*', ''), reply_to_message_id=message_id)
+        except:
+            pass
     
     # Пересылаем сообщение владельцу
     forward_to_owner(chat_id, message_id, user_name, user_id, original_text, chat_title)
     
-    # Отмечаем, что переслали
-    pending_forward[(chat_id, message_id)] = True
+    # Удаляем таймер
     timers.pop(key, None)
 
 @bot.message_handler(func=lambda message: True)
@@ -129,25 +152,20 @@ def handle_message(message):
     
     # Если триггер сработал И это не владелец
     if is_triggered and user_id != YOUR_USER_ID:
-        # Определяем время суток
-        now = datetime.now()
-        is_night = now.hour >= 22 or now.hour < 8
-        
-        # Создаем таймер
+        # Создаем таймер (НЕ отправляем ответ сразу!)
         key = (chat_id, message_id)
         timers[key] = True
         
         # Запускаем поток с задержкой
         timer_thread = threading.Thread(
             target=auto_reply,
-            args=(chat_id, message_id, user_name, user_id, message.text, is_night, chat_title),
+            args=(chat_id, message_id, user_name, user_id, message.text, chat_title),
             daemon=True
         )
         timer_thread.start()
         
-        period = "ночь (5 мин)" if is_night else "день (10 мин)"
         trigger_type = "кот" if is_cot else "упоминание"
-        print(f"⏰ Создан таймер ({period}) для @{user_name} [{trigger_type}]: {message.text[:50]}")
+        print(f"⏰ СОЗДАН ТАЙМЕР для @{user_name} [{trigger_type}]: {message.text[:50]}")
     
     # Если ответил ВЫ — отменяем ВСЕ таймеры в этом чате
     if user_id == YOUR_USER_ID:
@@ -159,11 +177,11 @@ def handle_message(message):
             print(f"🗑️ Отменено {len(keys_to_remove)} таймеров (ответил владелец)")
 
 print("=" * 60)
-print("🤖 БОТ ЗАПУЩЕН")
+print("🤖 БОТ ЗАПУЩЕН (НОВАЯ ВЕРСИЯ С ТАЙМЕРОМ)")
 print("=" * 60)
 print(f"📌 Ваш ID: {YOUR_USER_ID}")
 print("📋 Триггеры: кот-вариации, @qwerty0379, reply на ваши сообщения")
-print("⏰ День (8-22): 10 минут | Ночь (22-8): 5 минут")
+print("⏰ По МСК: День (8-22): 10 минут | Ночь (22-8): 5 минут")
 print("=" * 60)
 
 bot.infinity_polling()
