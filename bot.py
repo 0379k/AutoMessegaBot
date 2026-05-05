@@ -4,20 +4,18 @@ import threading
 import re
 from datetime import datetime
 
-# ===== НАСТРОЙКИ (ЗАМЕНИТЕ НА СВОИ) =====
-BOT_TOKEN = "8721233798:AAFCqgy_TqwJ6snKMph20ea9jhwoLRo417Y"  # Ваш токен
-YOUR_USER_ID = 5603035274  # Ваш Telegram ID (узнайте у @userinfobot)
-# ========================================
+# ===== НАСТРОЙКИ =====
+BOT_TOKEN = "8721233798:AAFCqgy_TqwJ6snKMph20ea9jhwoLRo417Y"
+YOUR_USER_ID = 5603035274
+# ====================
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Словарь для хранения таймеров: ключ = (chat_id, message_id)
-timers = {}
+# Хранилища
+timers = {}           # Активные таймеры
+pending_forward = {}  # Пересланные сообщения
 
-# Словарь для хранения информации о сообщениях для пересылки
-pending_forward = {}
-
-# ===== РАСШИРЕННЫЙ СПИСОК ВАРИАЦИЙ СЛОВА "КОТ" =====
+# Регулярка для вариаций "кот"
 COT_VARIANTS = re.compile(
     r'(?:'
     r'кот|котик|котейка|котище|котишко|котёнок|котенок|'
@@ -32,35 +30,25 @@ COT_VARIANTS = re.compile(
 )
 
 def contains_cot_variant(text):
-    """Проверяет, содержит ли текст любую вариацию слова "кот" """
-    if COT_VARIANTS.search(text):
-        return True
-    return False
+    return bool(COT_VARIANTS.search(text))
 
 def is_owner_mentioned(text):
-    """Проверяет, упомянут ли в тексте владелец с тегом @qwerty0379"""
     return '@qwerty0379' in text.lower()
 
 def is_owner_mentioned_in_message(message):
-    """Проверяет, есть ли упоминание владельца в сообщении"""
     if message.text and '@qwerty0379' in message.text.lower():
         return True
-    
-    if message.reply_to_message:
-        if message.reply_to_message.from_user.id == YOUR_USER_ID:
-            return True
-    
+    if message.reply_to_message and message.reply_to_message.from_user.id == YOUR_USER_ID:
+        return True
     if message.entities:
         for entity in message.entities:
             if entity.type == 'mention':
                 mention = message.text[entity.offset:entity.offset + entity.length]
                 if mention.lower() == '@qwerty0379':
                     return True
-    
     return False
 
 def get_reply_message(is_night):
-    """Возвращает разные сообщения в зависимости от времени суток"""
     if is_night:
         return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель предположительно спит, прошу вас подождать до утра чтобы он вам смог ответить! 🌙"
     else:
@@ -70,61 +58,60 @@ def forward_to_owner(chat_id, message_id, user_name, user_id, original_text, cha
     """Пересылает сообщение владельцу в личку"""
     try:
         forward_text = (
-            f"📨 *Вам пришло новое сообщение!*\n\n"
+            f"📨 *Вам не ответили на сообщение!*\n\n"
             f"👤 *От:* @{user_name} (ID: {user_id})\n"
             f"💬 *Текст:* {original_text}\n"
             f"📅 *Время:* {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-            f"🏠 *Группа:* {chat_title}\n\n"
-            f"⚠️ *Статус:* Вы не ответили на это сообщение"
+            f"🏠 *Группа:* {chat_title}"
         )
-        
         bot.send_message(YOUR_USER_ID, forward_text, parse_mode="Markdown")
-        
-        try:
-            bot.forward_message(YOUR_USER_ID, chat_id, message_id)
-        except:
-            pass
-        
-        print(f"📨 Переслано сообщение {message_id} от @{user_name} владельцу")
+        bot.forward_message(YOUR_USER_ID, chat_id, message_id)
+        print(f"📨 Переслано сообщение {message_id} от @{user_name}")
         return True
     except Exception as e:
-        print(f"❌ Ошибка при пересылке: {e}")
+        print(f"❌ Ошибка пересылки: {e}")
         return False
 
 def auto_reply(chat_id, message_id, user_name, user_id, original_text, is_night, chat_title):
-    """Функция, которая срабатывает через задержку"""
-    time.sleep(0.5)
+    """Функция, которая срабатывает ЧЕРЕЗ ЗАДЕРЖКУ"""
+    # Определяем задержку в зависимости от времени суток
+    if is_night:
+        delay = 300  # 5 минут = 300 секунд
+    else:
+        delay = 600  # 10 минут = 600 секунд
     
+    print(f"⏳ Таймер запущен: жду {delay} секунд перед ответом...")
+    time.sleep(delay)  # ВАЖНО: именно здесь ожидание!
+    
+    # Проверяем, не отменили ли таймер
     key = (chat_id, message_id)
     if timers.get(key, False) is False:
+        print(f"⏸️ Таймер отменен (владелец ответил)")
         return
     
-    forward_key = (chat_id, message_id)
-    if forward_key in pending_forward and pending_forward[forward_key]:
-        timers.pop(key, None)
-        return
-    
+    # Отправляем автоответ в чат
     reply_text = get_reply_message(is_night)
-    
     try:
         bot.send_message(
             chat_id,
-            f"{reply_text}\n\n📝 *Ваше сообщение:* {original_text[:100]}...",
+            reply_text,
             reply_to_message_id=message_id,
             parse_mode="Markdown"
         )
-        time_period = "ночь" if is_night else "день"
-        print(f"✅ Автоответ отправлен для сообщения {message_id} ({time_period})")
+        print(f"✅ Автоответ отправлен для сообщения {message_id}")
     except Exception as e:
-        print(f"❌ Ошибка при отправке автоответа: {e}")
+        print(f"❌ Ошибка автоответа: {e}")
     
+    # Пересылаем сообщение владельцу
     forward_to_owner(chat_id, message_id, user_name, user_id, original_text, chat_title)
-    pending_forward[forward_key] = True
+    
+    # Отмечаем, что переслали
+    pending_forward[(chat_id, message_id)] = True
     timers.pop(key, None)
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    # Игнорируем сообщения от самого бота
+    # Игнорируем сообщения от бота
     if message.from_user.id == bot.get_me().id:
         return
     
@@ -133,32 +120,24 @@ def handle_message(message):
     user_id = message.from_user.id
     user_name = message.from_user.username or message.from_user.first_name
     text = message.text.lower() if message.text else ""
-    
     chat_title = message.chat.title or "личный чат"
     
     # Проверка триггеров
-    is_owner_triggered = is_owner_mentioned_in_message(message)
-    is_cot_triggered = contains_cot_variant(text)
-    is_triggered = is_cot_triggered or is_owner_triggered or is_owner_mentioned(text)
+    is_cot = contains_cot_variant(text)
+    is_mention = is_owner_mentioned(text) or is_owner_mentioned_in_message(message)
+    is_triggered = is_cot or is_mention
     
+    # Если триггер сработал И это не владелец
     if is_triggered and user_id != YOUR_USER_ID:
+        # Определяем время суток
         now = datetime.now()
         is_night = now.hour >= 22 or now.hour < 8
         
-        if is_night:
-            delay = 300
-            period = "ночь (5 мин)"
-        else:
-            delay = 600
-            period = "день (10 мин)"
-        
+        # Создаем таймер
         key = (chat_id, message_id)
         timers[key] = True
         
-        forward_key = (chat_id, message_id)
-        if forward_key not in pending_forward:
-            pending_forward[forward_key] = False
-        
+        # Запускаем поток с задержкой
         timer_thread = threading.Thread(
             target=auto_reply,
             args=(chat_id, message_id, user_name, user_id, message.text, is_night, chat_title),
@@ -166,52 +145,25 @@ def handle_message(message):
         )
         timer_thread.start()
         
-        trigger_type = "кот-вариация" if is_cot_triggered else "упоминание владельца" if is_owner_triggered else "@qwerty0379"
-        print(f"⏰ Запущен таймер ({period}) для @{user_name} [{trigger_type}]: {message.text[:50]}")
+        period = "ночь (5 мин)" if is_night else "день (10 мин)"
+        trigger_type = "кот" if is_cot else "упоминание"
+        print(f"⏰ Создан таймер ({period}) для @{user_name} [{trigger_type}]: {message.text[:50]}")
     
-    # Если ответил ВЫ — отменяем таймеры
+    # Если ответил ВЫ — отменяем ВСЕ таймеры в этом чате
     if user_id == YOUR_USER_ID:
-        cancelled = 0
         keys_to_remove = [k for k in timers.keys() if k[0] == chat_id]
         for key in keys_to_remove:
             timers[key] = False
             timers.pop(key, None)
-            cancelled += 1
-        
-        if cancelled > 0:
-            print(f"🗑️ Отменено {cancelled} таймеров, так как ответил владелец")
+        if keys_to_remove:
+            print(f"🗑️ Отменено {len(keys_to_remove)} таймеров (ответил владелец)")
 
-@bot.message_handler(commands=['status'])
-def status_command(message):
-    if message.from_user.id == YOUR_USER_ID:
-        active_count = len(timers)
-        forwarded_count = sum(1 for v in pending_forward.values() if v)
-        
-        status_text = (
-            f"📊 *Статистика бота:*\n\n"
-            f"⏰ Активных таймеров: {active_count}\n"
-            f"📨 Переслано сообщений: {forwarded_count}\n"
-            f"👥 Мониторится групп: {len(set(k[0] for k in timers))}"
-        )
-        bot.reply_to(message, status_text, parse_mode="Markdown")
-
-@bot.message_handler(commands=['clean'])
-def clean_command(message):
-    if message.from_user.id == YOUR_USER_ID:
-        old_count = len(pending_forward)
-        pending_forward.clear()
-        bot.reply_to(message, f"🧹 Очищено {old_count} записей о пересланных сообщениях")
-
-# ===== ЗАПУСК БОТА =====
 print("=" * 60)
-print("🤖 БОТ ЗАПУЩЕН И РАБОТАЕТ")
+print("🤖 БОТ ЗАПУЩЕН")
 print("=" * 60)
 print(f"📌 Ваш ID: {YOUR_USER_ID}")
-print(f"🔑 Токен: {BOT_TOKEN[:20]}...")
-print("\n📋 АКТИВНЫЕ ТРИГГЕРЫ:")
-print("   • Все вариации слова 'кот'")
-print("   • Прямые упоминания @qwerty0379")
-print("   • Ответы (reply) на ваши сообщения")
-print("\n🚀 Бот готов к работе!\n")
+print("📋 Триггеры: кот-вариации, @qwerty0379, reply на ваши сообщения")
+print("⏰ День (8-22): 10 минут | Ночь (22-8): 5 минут")
+print("=" * 60)
 
 bot.infinity_polling()
