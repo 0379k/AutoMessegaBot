@@ -2,20 +2,34 @@ import telebot
 import time
 import threading
 import re
-import pytz
 from datetime import datetime
-
+import os
+from openai import OpenAI
 
 # ===== НАСТРОЙКИ =====
 BOT_TOKEN = "8721233798:AAFCqgy_TqwJ6snKMph20ea9jhwoLRo417Y"
 YOUR_USER_ID = 5603035274
+OPENROUTER_API_KEY = "sk-or-v1-ваш_ключ_сюда"  # ВСТАВЬТЕ ВАШ КЛЮЧ!
 # ====================
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# Инициализация клиента OpenRouter (совместим с OpenAI API)
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": "https://t.me/B_A_S_I_K_bot",  # Ваш сайт/бот
+        "X-Title": "B.A.S.I.K. Assistant",
+    }
+)
+
 # Хранилища
 timers = {}
 pending_forward = {}
+
+# История сообщений для контекста (максимум 10 сообщений на чат)
+chat_histories = {}
 
 # Регулярка для вариаций "кот"
 COT_VARIANTS = re.compile(
@@ -25,7 +39,7 @@ COT_VARIANTS = re.compile(
     r'котакбас|котофей|котопес|котоматрица|котополитен|'
     r'котя|котёныш|котяшка|котопёс|котишко|коточка|'
     r'котобой|котовод|котоша|котосыч|котобаза|'
-    r'cat|cats|kitty|kitten|cattie|catto|'
+   r'cat|cats|kitty|kitten|cattie|catto|'
     r'мурзик|барсик|васька|рыжик|пушистик|хвостатый'
     r')',
     re.IGNORECASE
@@ -42,96 +56,112 @@ def is_owner_mentioned_in_message(message):
         return True
     if message.reply_to_message and message.reply_to_message.from_user.id == YOUR_USER_ID:
         return True
-    if message.entities:
-        for entity in message.entities:
-            if entity.type == 'mention':
-                mention = message.text[entity.offset:entity.offset + entity.length]
-                if mention.lower() == '@qwerty0379':
-                    return True
     return False
 
 def get_reply_message(is_night):
-    """Возвращает разные сообщения в зависимости от времени суток (МСК)"""
     if is_night:
         return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель предположительно спит, прошу вас подождать до утра.\n\n🌙 Спокойной ночи!"
     else:
         return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель находится вне сети, прошу вас подождать.\n\n☀️ Хорошего дня!"
 
-def forward_to_owner(chat_id, message_id, user_name, user_id, original_text, chat_title):
-    """Пересылает сообщение владельцу в личку"""
+# === НОВАЯ ФУНКЦИЯ: Запрос к нейросети ===
+def get_ai_response(chat_id, user_question):
+    """
+    Отправляет запрос к OpenRouter API с контекстом чата
+    Возвращает ответ нейросети
+    """
     try:
-        # Экранируем спецсимволы в тексте
-        safe_text = original_text.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]')
+        # Получаем историю чата (последние 10 сообщений)
+        history = chat_histories.get(chat_id, [])
         
-        forward_text = (
-            f"📨 *Вам не ответили на сообщение!*\n\n"
-            f"👤 *От:* @{user_name}\n"
-            f"💬 *Текст:* {safe_text}\n"
-            f"📅 *Время:* {datetime.now(pytz.timezone('Europe/Moscow')).strftime('%d.%m.%Y %H:%M:%S')} МСК\n"
-            f"🏠 *Группа:* {chat_title}"
+        # Формируем сообщения для API
+        messages = []
+        
+        # Добавляем системный промпт (инструкция для нейросети)
+        messages.append({
+            "role": "system",
+            "content": (
+                "Ты — Басик, умный и дружелюбный помощник в Telegram-чате. "
+                "Отвечай на вопросы пользователей вежливо и по делу. "
+                "Используй контекст диалога, если он есть. "
+                "Если не знаешь ответа — честно скажи об этом. "
+                "Отвечай на русском языке."
+            )
+        })
+        
+        # Добавляем историю чата (до 5 последних сообщений для контекста)
+        for msg in history[-5:]:
+            messages.append(msg)
+        
+        # Добавляем текущий вопрос пользователя
+        messages.append({
+            "role": "user",
+            "content": user_question
+        })
+        
+        # Отправляем запрос к OpenRouter
+        # Используем openrouter/free — маршрутизатор, который сам выберет лучшую бесплатную модель [citation:6]
+        response = client.chat.completions.create(
+            model="openrouter/free",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=500,
+            extra_body={
+                "provider": "free"  # Важно для бесплатного использования! [citation:4]
+            }
         )
-        bot.send_message(YOUR_USER_ID, forward_text, parse_mode="Markdown")
-        bot.forward_message(YOUR_USER_ID, chat_id, message_id)
-        print(f"📨 Переслано сообщение {message_id} от @{user_name}")
-        return True
+        
+        answer = response.choices[0].message.content
+        return answer
+        
     except Exception as e:
-        print(f"❌ Ошибка пересылки: {e}")
-        # Пробуем отправить без форматирования
-        try:
-            bot.send_message(YOUR_USER_ID, f"Вам не ответили!\nОт: @{user_name}\nТекст: {original_text}\nГруппа: {chat_title}")
-            bot.forward_message(YOUR_USER_ID, chat_id, message_id)
-        except:
-            pass
-        return False
+        print(f"❌ Ошибка при запросе к нейросети: {e}")
+        return "Извините, нейросеть временно недоступна. Попробуйте позже!"
 
 def auto_reply(chat_id, message_id, user_name, user_id, original_text, chat_title):
-    """Функция, которая срабатывает ЧЕРЕЗ ЗАДЕРЖКУ"""
-    # Определяем время по МСК
-    msk_tz = pytz.timezone('Europe/Moscow')
-    now_msk = datetime.now(msk_tz)
-    is_night = now_msk.hour >= 22 or now_msk.hour < 8
+    """Автоответчик (старая логика)"""
+    now = datetime.now()
+    is_night = now.hour >= 22 or now.hour < 8
     
     if is_night:
-        delay = 300  # 5 минут
+        delay = 300
         period = "ночь (5 мин)"
     else:
-        delay = 600  # 10 минут
+        delay = 600
         period = "день (10 мин)"
     
-    print(f"⏳ Таймер запущен: жду {delay} секунд ({period} по МСК)...")
-    
-    # Ждем
+    print(f"⏳ Таймер: жду {delay} секунд ({period})...")
     time.sleep(delay)
     
-    # Проверяем, не отменили ли таймер
     key = (chat_id, message_id)
     if timers.get(key, False) is False:
-        print(f"⏸️ Таймер отменен (владелец ответил)")
+        print(f"⏸️ Таймер отменен")
         return
     
-    # Отправляем автоответ в чат (только одна фраза, без дублирования!)
     reply_text = get_reply_message(is_night)
     try:
-        bot.send_message(
-            chat_id,
-            reply_text,
-            reply_to_message_id=message_id,
-            parse_mode="Markdown"
-        )
-        print(f"✅ Автоответ отправлен для сообщения {message_id}")
+        bot.send_message(chat_id, reply_text, reply_to_message_id=message_id)
+        print(f"✅ Автоответ отправлен")
     except Exception as e:
-        print(f"❌ Ошибка автоответа: {e}")
-        # Пробуем без форматирования
-        try:
-            bot.send_message(chat_id, reply_text.replace('*', ''), reply_to_message_id=message_id)
-        except:
-            pass
+        print(f"❌ Ошибка: {e}")
     
-    # Пересылаем сообщение владельцу
-    forward_to_owner(chat_id, message_id, user_name, user_id, original_text, chat_title)
-    
-    # Удаляем таймер
     timers.pop(key, None)
+
+def forward_to_owner(chat_id, message_id, user_name, user_id, original_text, chat_title):
+    """Пересылает сообщение владельцу"""
+    try:
+        forward_text = (
+            f"📨 Вам не ответили на сообщение!\n\n"
+            f"👤 От: @{user_name}\n"
+            f"💬 Текст: {original_text}\n"
+            f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+            f"🏠 Группа: {chat_title}"
+        )
+        bot.send_message(YOUR_USER_ID, forward_text)
+        bot.forward_message(YOUR_USER_ID, chat_id, message_id)
+        print(f"📨 Переслано сообщение {message_id}")
+    except Exception as e:
+        print(f"❌ Ошибка пересылки: {e}")
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -146,18 +176,52 @@ def handle_message(message):
     text = message.text.lower() if message.text else ""
     chat_title = message.chat.title or "личный чат"
     
-    # Проверка триггеров
+    # === НОВАЯ ФУНКЦИЯ: Обработка команды "БАСИК" (нейросеть) ===
+    # Проверяем, есть ли слово "басик" в начале сообщения
+    basik_pattern = r'^басик[,\s]+(.*)$'
+    basik_match = re.search(basik_pattern, text, re.IGNORECASE)
+    
+    if basik_match and user_id != YOUR_USER_ID:
+        # Извлекаем вопрос пользователя
+        question = basik_match.group(1).strip()
+        if question:
+            # Сохраняем вопрос в историю
+            if chat_id not in chat_histories:
+                chat_histories[chat_id] = []
+            chat_histories[chat_id].append({"role": "user", "content": question})
+            
+            # Показываем, что бот печатает
+            bot.send_chat_action(chat_id, "typing")
+            
+            # Получаем ответ от нейросети (с контекстом)
+            ai_response = get_ai_response(chat_id, question)
+            
+            # Сохраняем ответ в историю
+            chat_histories[chat_id].append({"role": "assistant", "content": ai_response})
+            
+            # Ограничиваем историю 10 сообщениями
+            if len(chat_histories[chat_id]) > 10:
+                chat_histories[chat_id] = chat_histories[chat_id][-10:]
+            
+            # Отправляем ответ (разбиваем, если слишком длинный)
+            if len(ai_response) > 4000:
+                for i in range(0, len(ai_response), 4000):
+                    bot.reply_to(message, ai_response[i:i+4000])
+            else:
+                bot.reply_to(message, f"🤖 *Басик:*\n{ai_response}", parse_mode="Markdown")
+            
+            print(f"🧠 Нейросеть ответила @{user_name} на: {question[:50]}")
+            return
+    
+    # === СТАРАЯ ФУНКЦИЯ: Автоответ на "кот" и упоминания ===
     is_cot = contains_cot_variant(text)
     is_mention = is_owner_mentioned(text) or is_owner_mentioned_in_message(message)
     is_triggered = is_cot or is_mention
     
-    # Если триггер сработал И это не владелец
     if is_triggered and user_id != YOUR_USER_ID:
-        # Создаем таймер (НЕ отправляем ответ сразу!)
         key = (chat_id, message_id)
         timers[key] = True
         
-        # Запускаем поток с задержкой
         timer_thread = threading.Thread(
             target=auto_reply,
             args=(chat_id, message_id, user_name, user_id, message.text, chat_title),
@@ -168,21 +232,34 @@ def handle_message(message):
         trigger_type = "кот" if is_cot else "упоминание"
         print(f"⏰ СОЗДАН ТАЙМЕР для @{user_name} [{trigger_type}]: {message.text[:50]}")
     
-    # Если ответил ВЫ — отменяем ВСЕ таймеры в этом чате
+    # Если ответил ВЫ — отменяем таймеры
     if user_id == YOUR_USER_ID:
         keys_to_remove = [k for k in timers.keys() if k[0] == chat_id]
         for key in keys_to_remove:
             timers[key] = False
             timers.pop(key, None)
         if keys_to_remove:
-            print(f"🗑️ Отменено {len(keys_to_remove)} таймеров (ответил владелец)")
+            print(f"🗑️ Отменено {len(keys_to_remove)} таймеров")
+    
+    # Сохраняем сообщение в историю для контекста (кроме команд)
+    if not text.startswith('/') and not basik_match:
+        if chat_id not in chat_histories:
+            chat_histories[chat_id] = []
+        chat_histories[chat_id].append({
+            "role": "user",
+            "content": f"{user_name}: {message.text}"
+        })
+        if len(chat_histories[chat_id]) > 10:
+            chat_histories[chat_id] = chat_histories[chat_id][-10:]
 
 print("=" * 60)
-print("🤖 БОТ ЗАПУЩЕН (НОВАЯ ВЕРСИЯ С ТАЙМЕРОМ)")
+print("🤖 БОТ ЗАПУЩЕН (ВЕРСИЯ С НЕЙРОСЕТЬЮ)")
 print("=" * 60)
 print(f"📌 Ваш ID: {YOUR_USER_ID}")
-print("📋 Триггеры: кот-вариации, @qwerty0379, reply на ваши сообщения")
-print("⏰ По МСК: День (8-22): 10 минут | Ночь (22-8): 5 минут")
+print("📋 ФУНКЦИИ:")
+print("   • 'кот' или @qwerty0379 -> автоответ через 10/5 мин")
+print("   • 'Басик, вопрос' -> мгновенный ответ нейросети")
+print("   • Нейросеть помнит последние 10 сообщений в чате")
 print("=" * 60)
 
 bot.infinity_polling()
