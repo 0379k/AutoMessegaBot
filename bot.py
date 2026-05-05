@@ -3,32 +3,31 @@ import time
 import threading
 import re
 from datetime import datetime
-import os
 from openai import OpenAI
+import os
 
 # ===== НАСТРОЙКИ =====
 BOT_TOKEN = "8721233798:AAFCqgy_TqwJ6snKMph20ea9jhwoLRo417Y"
 YOUR_USER_ID = 5603035274
-OPENROUTER_API_KEY = "sk-or-v1-ваш_ключ_сюда"  # ВСТАВЬТЕ ВАШ КЛЮЧ!
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 # ====================
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Инициализация клиента OpenRouter (совместим с OpenAI API)
+# Дальше остальной код без изменений...
+
+# Инициализация клиента OpenRouter
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
     default_headers={
-        "HTTP-Referer": "https://t.me/B_A_S_I_K_bot",  # Ваш сайт/бот
+        "HTTP-Referer": "https://t.me/B_A_S_I_K_bot",
         "X-Title": "B.A.S.I.K. Assistant",
     }
 )
 
 # Хранилища
 timers = {}
-pending_forward = {}
-
-# История сообщений для контекста (максимум 10 сообщений на чат)
 chat_histories = {}
 
 # Регулярка для вариаций "кот"
@@ -39,7 +38,7 @@ COT_VARIANTS = re.compile(
     r'котакбас|котофей|котопес|котоматрица|котополитен|'
     r'котя|котёныш|котяшка|котопёс|котишко|коточка|'
     r'котобой|котовод|котоша|котосыч|котобаза|'
-   r'cat|cats|kitty|kitten|cattie|catto|'
+    r'cat|cats|kitty|kitten|cattie|catto|'
     r'мурзик|барсик|васька|рыжик|пушистик|хвостатый'
     r')',
     re.IGNORECASE
@@ -64,20 +63,19 @@ def get_reply_message(is_night):
     else:
         return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель находится вне сети, прошу вас подождать.\n\n☀️ Хорошего дня!"
 
-# === НОВАЯ ФУНКЦИЯ: Запрос к нейросети ===
 def get_ai_response(chat_id, user_question):
-    """
-    Отправляет запрос к OpenRouter API с контекстом чата
-    Возвращает ответ нейросети
-    """
+    """Отправляет запрос к OpenRouter API с контекстом чата"""
     try:
-        # Получаем историю чата (последние 10 сообщений)
+        # Исправляем кодировку для русского языка
+        user_question = user_question.encode('utf-8').decode('utf-8')
+        
+        # Получаем историю чата
         history = chat_histories.get(chat_id, [])
         
         # Формируем сообщения для API
         messages = []
         
-        # Добавляем системный промпт (инструкция для нейросети)
+        # Системный промпт
         messages.append({
             "role": "system",
             "content": (
@@ -89,25 +87,24 @@ def get_ai_response(chat_id, user_question):
             )
         })
         
-        # Добавляем историю чата (до 5 последних сообщений для контекста)
+        # Добавляем историю (последние 5 сообщений)
         for msg in history[-5:]:
             messages.append(msg)
         
-        # Добавляем текущий вопрос пользователя
+        # Добавляем текущий вопрос
         messages.append({
             "role": "user",
             "content": user_question
         })
         
-        # Отправляем запрос к OpenRouter
-        # Используем openrouter/free — маршрутизатор, который сам выберет лучшую бесплатную модель [citation:6]
+        # Запрос к OpenRouter
         response = client.chat.completions.create(
             model="openrouter/free",
             messages=messages,
             temperature=0.7,
             max_tokens=500,
             extra_body={
-                "provider": "free"  # Важно для бесплатного использования! [citation:4]
+                "provider": "free"
             }
         )
         
@@ -118,37 +115,32 @@ def get_ai_response(chat_id, user_question):
         print(f"❌ Ошибка при запросе к нейросети: {e}")
         return "Извините, нейросеть временно недоступна. Попробуйте позже!"
 
-def auto_reply(chat_id, message_id, user_name, user_id, original_text, chat_title):
-    """Автоответчик (старая логика)"""
+def auto_reply(chat_id, message_id, user_name, original_text):
+    """Автоответчик для триггеров 'кот' и @qwerty0379"""
     now = datetime.now()
     is_night = now.hour >= 22 or now.hour < 8
+    delay = 300 if is_night else 600
     
-    if is_night:
-        delay = 300
-        period = "ночь (5 мин)"
-    else:
-        delay = 600
-        period = "день (10 мин)"
-    
+    period = "ночь (5 мин)" if is_night else "день (10 мин)"
     print(f"⏳ Таймер: жду {delay} секунд ({period})...")
     time.sleep(delay)
     
     key = (chat_id, message_id)
-    if timers.get(key, False) is False:
+    if not timers.get(key, False):
         print(f"⏸️ Таймер отменен")
         return
     
     reply_text = get_reply_message(is_night)
     try:
-        bot.send_message(chat_id, reply_text, reply_to_message_id=message_id)
+        bot.send_message(chat_id, reply_text, reply_to_message_id=message_id, parse_mode="Markdown")
         print(f"✅ Автоответ отправлен")
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка автоответа: {e}")
     
     timers.pop(key, None)
 
-def forward_to_owner(chat_id, message_id, user_name, user_id, original_text, chat_title):
-    """Пересылает сообщение владельцу"""
+def forward_to_owner(chat_id, message_id, user_name, original_text, chat_title):
+    """Пересылает сообщение владельцу в личку"""
     try:
         forward_text = (
             f"📨 Вам не ответили на сообщение!\n\n"
@@ -176,13 +168,12 @@ def handle_message(message):
     text = message.text.lower() if message.text else ""
     chat_title = message.chat.title or "личный чат"
     
-    # === НОВАЯ ФУНКЦИЯ: Обработка команды "БАСИК" (нейросеть) ===
-    # Проверяем, есть ли слово "басик" в начале сообщения
+    # === ОБРАБОТКА НЕЙРОСЕТИ (БАСИК) ===
+    # Паттерн: "Басик, вопрос", "басик вопрос", "БАСИК вопрос" и т.д.
     basik_pattern = r'^басик[,\s]+(.*)$'
     basik_match = re.search(basik_pattern, text, re.IGNORECASE)
     
     if basik_match and user_id != YOUR_USER_ID:
-        # Извлекаем вопрос пользователя
         question = basik_match.group(1).strip()
         if question:
             # Сохраняем вопрос в историю
@@ -193,7 +184,7 @@ def handle_message(message):
             # Показываем, что бот печатает
             bot.send_chat_action(chat_id, "typing")
             
-            # Получаем ответ от нейросети (с контекстом)
+            # Получаем ответ от нейросети
             ai_response = get_ai_response(chat_id, question)
             
             # Сохраняем ответ в историю
@@ -208,12 +199,12 @@ def handle_message(message):
                 for i in range(0, len(ai_response), 4000):
                     bot.reply_to(message, ai_response[i:i+4000])
             else:
-                bot.reply_to(message, f"🤖 *Басик:*\n{ai_response}", parse_mode="Markdown")
+                bot.reply_to(message, f"🤖 *Басик:* {ai_response}", parse_mode="Markdown")
             
             print(f"🧠 Нейросеть ответила @{user_name} на: {question[:50]}")
             return
     
-    # === СТАРАЯ ФУНКЦИЯ: Автоответ на "кот" и упоминания ===
+    # === АВТООТВЕТ НА "КОТ" И УПОМИНАНИЯ ===
     is_cot = contains_cot_variant(text)
     is_mention = is_owner_mentioned(text) or is_owner_mentioned_in_message(message)
     is_triggered = is_cot or is_mention
@@ -224,7 +215,7 @@ def handle_message(message):
         
         timer_thread = threading.Thread(
             target=auto_reply,
-            args=(chat_id, message_id, user_name, user_id, message.text, chat_title),
+            args=(chat_id, message_id, user_name, message.text),
             daemon=True
         )
         timer_thread.start()
