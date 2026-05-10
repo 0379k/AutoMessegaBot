@@ -8,7 +8,7 @@ import schedule
 # ===== НАСТРОЙКИ =====
 BOT_TOKEN = "8721233798:AAFCqgy_TqwJ6snKMph20ea9jhwoLRo417Y"
 YOUR_USER_ID = 5603035274
-CHAT_ID = -1001234567890  # ЗАМЕНИТЕ на ID вашей группы!
+CHAT_ID = -1002462732273  # ЗАМЕНИТЕ на ID вашей группы!
 # ====================
 
 bot = telebot.TeleBot(BOT_TOKEN)
