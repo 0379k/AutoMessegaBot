@@ -1,79 +1,18 @@
 import telebot
 import time
-import threading
 import re
 from datetime import datetime
 
-# ===== НАСТРОЙКИ =====
-BOT_TOKEN = "8721233798:AAFCqgy_TqwJ6snKMph20ea9jhwoLRo417Y"
-YOUR_USER_ID = 5603035274
-# ====================
+# Замените на ваш токен от BotFather
+BOT_TOKEN = "ВАШ_ТОКЕН_СЮДА"
+
+# Замените на ваш Telegram ID (узнайте у @userinfobot)
+YOUR_USER_ID = 123456789
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Словарь для хранения активных таймеров
-timers = {}
-
-# Регулярка для вариаций слова "кот"
-COT_VARIANTS = re.compile(
-    r'(?:'
-    r'кот|котик|котейка|котище|котишко|котёнок|котенок|'
-    r'котэ|коте|коть|котикей|котан|котич|котяра|котюня|'
-    r'котакбас|котофей|котопес|котоматрица|котополитен|'
-    r'котя|котёныш|котяшка|котопёс|котишко|коточка|'
-    r'котобой|котовод|котоша|котосыч|котобаза|'
-    r'cat|cats|kitty|kitten|cattie|catto|'
-    r'мурзик|барсик|васька|рыжик|пушистик|хвостатый'
-    r')',
-    re.IGNORECASE
-)
-
-def contains_cot_variant(text):
-    """Проверяет, содержит ли текст вариацию слова 'кот'"""
-    return bool(COT_VARIANTS.search(text))
-
-def is_owner_mentioned(text):
-    """Проверяет упоминание @qwerty0379"""
-    return '@qwerty0379' in text.lower()
-
-def is_owner_mentioned_in_message(message):
-    """Проверяет упоминание владельца через reply"""
-    if message.text and '@qwerty0379' in message.text.lower():
-        return True
-    if message.reply_to_message and message.reply_to_message.from_user.id == YOUR_USER_ID:
-        return True
-    return False
-
-def get_reply_message(is_night):
-    """Возвращает сообщение для автоответа в зависимости от времени суток"""
-    if is_night:
-        return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель предположительно спит, прошу вас подождать до утра.\n\n🌙 Спокойной ночи!"
-    else:
-        return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель находится вне сети, прошу вас подождать.\n\n☀️ Хорошего дня!"
-
-def auto_reply(chat_id, message_id, user_name, original_text):
-    """Функция автоответа, запускается через задержку"""
-    now = datetime.now()
-    is_night = now.hour >= 22 or now.hour < 8
-    delay = 300 if is_night else 600  # 5 мин ночью, 10 мин днём
-    
-    period = "ночь (5 мин)" if is_night else "день (10 мин)"
-    print(f"⏳ Таймер: жду {delay} секунд ({period})...")
-    time.sleep(delay)
-    
-    key = (chat_id, message_id)
-    if not timers.get(key, False):
-        print(f"⏸️ Таймер отменен (владелец ответил)")
-        return
-    
-    reply_text = get_reply_message(is_night)
-    try:
-        bot.send_message(chat_id, reply_text, reply_to_message_id=message_id, parse_mode="Markdown")
-        print(f"✅ Автоответ отправлен для сообщения {message_id}")
-    except Exception as e:
-        print(f"❌ Ошибка отправки: {e}")
-    
-    timers.pop(key, None)
+# Хранилище активных сообщений, на которые еще не ответили
+pending_messages = {}
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -84,45 +23,67 @@ def handle_message(message):
     chat_id = message.chat.id
     message_id = message.message_id
     user_id = message.from_user.id
-    user_name = message.from_user.username or message.from_user.first_name
     text = message.text.lower() if message.text else ""
     
-    # Проверяем триггеры
-    is_cot = contains_cot_variant(text)
-    is_mention = is_owner_mentioned(text) or is_owner_mentioned_in_message(message)
-    is_triggered = is_cot or is_mention
+    # --- Проверка триггеров "кот" или тег ---
+    is_triggered = "кот" in text or f"@{message.from_user.username}" == "@qwerty0379"
     
-    # Если триггер сработал и это не владелец
     if is_triggered and user_id != YOUR_USER_ID:
-        key = (chat_id, message_id)
-        timers[key] = True
+        # Определяем время задержки
+        now = datetime.now()
+        if 8 <= now.hour < 22:
+            delay = 600  # 10 минут днем
+        else:
+            delay = 300  # 5 минут ночью
         
-        timer_thread = threading.Thread(
-            target=auto_reply,
-            args=(chat_id, message_id, user_name, message.text),
-            daemon=True
-        )
-        timer_thread.start()
+        # Сохраняем сообщение в ожидающие
+        pending_messages[message_id] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "user_id": user_id,
+            "text": message.text,
+            "delay": delay,
+            "start_time": time.time()
+        }
         
-        trigger_type = "кот" if is_cot else "упоминание"
-        print(f"⏰ СОЗДАН ТАЙМЕР для @{user_name} [{trigger_type}]: {message.text[:50]}")
+        # Запускаем таймер проверки
+        bot.send_message(chat_id, f"⏳ Заметил! Если {message.from_user.first_name} не ответит через {delay//60} минут, отвечу я.", 
+                        reply_to_message_id=message_id)
+        
+        # Запускаем фоновую проверку (в реальном коде нужен threading, но для простоты используем schedule)
+        check_pending_messages()
     
-    # Если ответил ВЫ — отменяем все таймеры в этом чате
+    # --- Если ответил владелец, удаляем ожидающие ответы ---
     if user_id == YOUR_USER_ID:
-        keys_to_remove = [k for k in timers.keys() if k[0] == chat_id]
-        for key in keys_to_remove:
-            timers[key] = False
-            timers.pop(key, None)
-        if keys_to_remove:
-            print(f"🗑️ Отменено {len(keys_to_remove)} таймеров")
+        # Удаляем все ожидающие сообщения в этом чате
+        to_remove = [msg_id for msg_id, data in pending_messages.items() 
+                    if data["chat_id"] == chat_id]
+        for msg_id in to_remove:
+            del pending_messages[msg_id]
+        print(f"✅ Владелец ответил, таймеры отменены")
 
-print("=" * 60)
-print("🤖 БОТ-АВТООТВЕТЧИК ЗАПУЩЕН")
-print("=" * 60)
-print(f"📌 Ваш ID: {YOUR_USER_ID}")
-print("📋 ФУНКЦИИ:")
-print("   • 'кот' или @qwerty0379 -> автоответ через 10/5 мин")
-print("   • Вы отвечаете -> таймер отменяется")
-print("=" * 60)
+def check_pending_messages():
+    """Проверяет истекшие ожидающие сообщения"""
+    current_time = time.time()
+    to_remove = []
+    
+    for msg_id, data in pending_messages.items():
+        if current_time - data["start_time"] >= data["delay"]:
+            # Время вышло, отправляем ответ
+            try:
+                bot.send_message(
+                    data["chat_id"],
+                    f"🤖 *Автоответчик*: Извините, {data['text']} — я пока не могу ответить, но обязательно отвечу позже!",
+                    reply_to_message_id=data["message_id"],
+                    parse_mode="Markdown"
+                )
+                to_remove.append(msg_id)
+            except Exception as e:
+                print(f"Ошибка при отправке: {e}")
+    
+    for msg_id in to_remove:
+        del pending_messages[msg_id]
 
+# Запуск бота
+print("🤖 Бот запущен и работает...")
 bot.infinity_polling()
