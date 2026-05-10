@@ -5,17 +5,20 @@ import re
 import json
 import os
 from datetime import datetime, timedelta
-import schedule
+import pytz
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ===== НАСТРОЙКИ =====
 BOT_TOKEN = "8721233798:AAFCqgy_TqwJ6snKMph20ea9jhwoLRo417Y"
 YOUR_USER_ID = 5603035274
-CHAT_ID = -1002462732273  # ЗАМЕНИТЕ на ID вашей группы!
+CHAT_ID = -1001234567890  # ЗАМЕНИТЕ на ID вашей группы!
 # ====================
 
 bot = telebot.TeleBot(BOT_TOKEN)
 timers = {}
+
+# Часовой пояс Москвы
+MSK_TZ = pytz.timezone('Europe/Moscow')
 
 # Файл для хранения дней рождений
 BIRTHDAYS_FILE = "birthdays.json"
@@ -66,7 +69,7 @@ def get_reply_message(is_night):
         return "🤖 *Б.А.С.И.К.*: В данный момент мой создатель находится вне сети, прошу вас подождать.\n\n☀️ Хорошего дня!"
 
 def auto_reply(chat_id, message_id, user_name, original_text):
-    now = datetime.now()
+    now = datetime.now(MSK_TZ)
     is_night = now.hour >= 23 or now.hour < 8
     delay = 300 if is_night else 600
     
@@ -88,9 +91,9 @@ def auto_reply(chat_id, message_id, user_name, original_text):
 
 # ===== ФУНКЦИИ ДЛЯ ДНЕЙ РОЖДЕНИЙ =====
 def check_birthdays():
-    """Проверяет, есть ли сегодня день рождения у кого-то"""
-    today = datetime.now().strftime("%d.%m")
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m")
+    """Проверяет, есть ли сегодня или завтра день рождения"""
+    today = datetime.now(MSK_TZ).strftime("%d.%m")
+    tomorrow = (datetime.now(MSK_TZ) + timedelta(days=1)).strftime("%d.%m")
     
     for username, data in birthdays.items():
         if data["date"] == today:
@@ -108,7 +111,6 @@ def check_birthdays():
             except Exception as e:
                 print(f"❌ Ошибка отправки поздравления: {e}")
         
-        # Проверка на завтрашний день рождения (уведомление за 8 часов)
         if data["date"] == tomorrow:
             name = data.get("name", username)
             try:
@@ -119,37 +121,64 @@ def check_birthdays():
                     f"Не забудьте поздравить! 🎉",
                     parse_mode="Markdown"
                 )
-                print(f"📨 Отправлено уведомление о завтрашнем дне рождения @{username}")
+                print(f"📨 Уведомление отправлено @{username}")
             except Exception as e:
-                print(f"❌ Ошибка отправки уведомления: {e}")
+                print(f"❌ Ошибка уведомления: {e}")
 
-def morning_greeting():
-    try:
-        bot.send_message(CHAT_ID, "🌅 *Б.А.С.И.К.*: Доброе утро! Желаю всем продуктивного дня! ☀️", parse_mode="Markdown")
-        print("✅ Отправлено утреннее приветствие")
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
+# ===== УТРЕННИЕ И ВЕЧЕРНИЕ ПРИВЕТСТВИЯ =====
+morning_last_sent = None
+evening_last_sent = None
 
-def night_greeting():
-    try:
-        bot.send_message(CHAT_ID, "🌙 *Б.А.С.И.К.*: Спокойной ночи! Приятных снов и до завтра! 😴", parse_mode="Markdown")
-        print("✅ Отправлено вечернее приветствие")
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-
-def run_scheduler():
-    schedule.every().day.at("08:00").do(morning_greeting)
-    schedule.every().day.at("23:59").do(night_greeting)
-    schedule.every().day.at("09:00").do(check_birthdays)
+def send_morning_greeting():
+    global morning_last_sent
+    now = datetime.now(MSK_TZ)
+    today = now.strftime("%Y-%m-%d")
     
-    print("📅 Планировщик запущен")
+    if morning_last_sent != today:
+        try:
+            bot.send_message(CHAT_ID, "🌅 *Б.А.С.И.К.*: Доброе утро! Желаю всем продуктивного дня! ☀️", parse_mode="Markdown")
+            print(f"✅ Утреннее приветствие отправлено в {now.strftime('%H:%M')} МСК")
+            morning_last_sent = today
+        except Exception as e:
+            print(f"❌ Ошибка утреннего приветствия: {e}")
+
+def send_evening_greeting():
+    global evening_last_sent
+    now = datetime.now(MSK_TZ)
+    today = now.strftime("%Y-%m-%d")
+    
+    if evening_last_sent != today:
+        try:
+            bot.send_message(CHAT_ID, "🌙 *Б.А.С.И.К.*: Спокойной ночи! Приятных снов и до завтра! 😴", parse_mode="Markdown")
+            print(f"✅ Вечернее приветствие отправлено в {now.strftime('%H:%M')} МСК")
+            evening_last_sent = today
+        except Exception as e:
+            print(f"❌ Ошибка вечернего приветствия: {e}")
+
+# ===== ПЛАНИРОВЩИК =====
+def run_scheduler():
+    """Планировщик с проверкой времени по МСК каждые 30 секунд"""
+    print("📅 Планировщик запущен (МСК)")
+    
     while True:
-        schedule.run_pending()
+        now = datetime.now(MSK_TZ)
+        
+        # Утреннее приветствие в 08:00
+        if now.hour == 8 and now.minute == 0:
+            send_morning_greeting()
+        
+        # Вечернее приветствие в 23:59
+        if now.hour == 23 and now.minute == 59:
+            send_evening_greeting()
+        
+        # Проверка дней рождений в 09:00 и 21:00 (на всякий случай)
+        if now.hour == 9 and now.minute == 0:
+            check_birthdays()
+        
         time.sleep(30)
 
 # ===== КНОПКИ В ЛС =====
 def main_menu_keyboard():
-    """Главное меню с кнопками"""
     keyboard = InlineKeyboardMarkup(row_width=2)
     btn_add = InlineKeyboardButton("➕ Добавить день рождения", callback_data="add_birthday")
     btn_list = InlineKeyboardButton("📋 Список дней рождений", callback_data="list_birthdays")
@@ -158,16 +187,14 @@ def main_menu_keyboard():
     return keyboard
 
 def cancel_keyboard():
-    """Кнопка отмены"""
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel"))
     return keyboard
 
-# Обработка callback-запросов от кнопок
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     if call.from_user.id != YOUR_USER_ID:
-        bot.answer_callback_query(call.id, "❌ У вас нет прав для этого действия", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ У вас нет прав", show_alert=True)
         return
     
     if call.data == "add_birthday":
@@ -175,8 +202,7 @@ def handle_callback(call):
         msg = bot.send_message(call.message.chat.id, 
             "📝 *Введите данные в формате:*\n\n"
             "`15.05 @username Имя`\n\n"
-            "Пример: `15.05 @ivan Иван Петров`\n\n"
-            "Нажмите 'Отмена' чтобы вернуться в меню",
+            "Пример: `15.05 @ivan Иван Петров`",
             parse_mode="Markdown",
             reply_markup=cancel_keyboard())
         bot.register_next_step_handler(msg, process_add_birthday)
@@ -194,14 +220,12 @@ def handle_callback(call):
     elif call.data == "remove_birthday":
         if not birthdays:
             bot.answer_callback_query(call.id, "Список пуст", show_alert=True)
-            bot.send_message(call.message.chat.id, "📭 Нет дней рождений для удаления", reply_markup=main_menu_keyboard())
             return
         
         bot.answer_callback_query(call.id)
         keyboard = InlineKeyboardMarkup(row_width=1)
         for username, data in birthdays.items():
-            btn = InlineKeyboardButton(f"❌ {data['date']} {data['name']} (@{username})", callback_data=f"del_{username}")
-            keyboard.add(btn)
+            keyboard.add(InlineKeyboardButton(f"❌ {data['date']} {data['name']} (@{username})", callback_data=f"del_{username}"))
         keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu"))
         bot.send_message(call.message.chat.id, "👤 *Выберите кого удалить:*", parse_mode="Markdown", reply_markup=keyboard)
     
@@ -257,12 +281,12 @@ def start_cmd(message):
     if message.chat.type == 'private':
         bot.send_message(message.chat.id, 
             "🎂 *Бот-помощник с напоминанием о днях рождения!*\n\n"
-            "Нажмите на кнопки ниже для управления днями рождения:\n\n"
+            "Нажмите на кнопки ниже для управления:\n\n"
             "• **Добавить** — добавить день рождения\n"
             "• **Список** — посмотреть все даты\n"
             "• **Удалить** — удалить день рождения\n\n"
             "🎉 В день рождения в 09:00 бот отправит поздравление в группу!\n"
-            "📨 За 8 часов бот пришлёт вам уведомление в ЛС.",
+            "📨 За сутки бот пришлёт вам уведомление в ЛС.",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard())
 
@@ -272,7 +296,6 @@ def handle_message(message):
     if message.from_user.id == bot.get_me().id:
         return
     
-    # Игнорируем команды (обработаны выше)
     if message.text and message.text.startswith('/'):
         return
     
@@ -282,7 +305,6 @@ def handle_message(message):
     user_name = message.from_user.username or message.from_user.first_name
     text = message.text.lower() if message.text else ""
     
-    # Проверка триггеров
     is_cot = contains_cot_variant(text)
     is_mention = is_owner_mentioned(text) or is_owner_mentioned_in_message(message)
     is_triggered = is_cot or is_mention
@@ -311,23 +333,24 @@ def handle_message(message):
 
 # ===== ЗАПУСК =====
 print("=" * 60)
-print("🤖 БОТ ЗАПУЩЕН (С КНОПКАМИ И УВЕДОМЛЕНИЯМИ)")
+print("🤖 БОТ ЗАПУЩЕН (С КНОПКАМИ И ПЛАНИРОВЩИКОМ ПО МСК)")
 print("=" * 60)
 print(f"📌 Ваш ID: {YOUR_USER_ID}")
 print(f"📌 ID группы: {CHAT_ID}")
+print(f"🕐 Текущее время по МСК: {datetime.now(MSK_TZ).strftime('%H:%M:%S')}")
 print("📋 ФУНКЦИИ:")
 print("   • 'кот' или @qwerty0379 -> автоответ через 10/5 мин")
 print("   • Ночной режим: 23:00 - 08:00 (ожидание 5 мин)")
 print("   • Ежедневно: 08:00 - утреннее приветствие")
 print("   • Ежедневно: 23:59 - вечернее приветствие")
 print("   • Ежедневно: 09:00 - проверка дней рождений")
-print("   • Уведомление в ЛС за 8 часов до дня рождения")
+print("   • Уведомление в ЛС за сутки до дня рождения")
 print("   • Кнопки в ЛС вместо команд")
 print("=" * 60)
 
-# Запускаем планировщик
+# Запуск планировщика в фоне
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
 
-# Запускаем бота
+# Запуск бота
 bot.infinity_polling()
